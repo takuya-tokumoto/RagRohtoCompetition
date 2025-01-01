@@ -11,7 +11,7 @@
 Anacondaのパスを通し、condaコマンドが利用可能か確認する。  
 以下のコマンドで仮想環境を作成する。  
 ```shell
-conda create -n {環境名} python=3.9
+conda create -n {環境名} python=3.11.9
 ```
 仮想環境を起動する  
 ```shell
