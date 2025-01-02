@@ -1,8 +1,7 @@
 import json
-import os
 import sys
 import time
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 import pdfplumber
 from dotenv import load_dotenv
@@ -37,7 +36,18 @@ pdf_file_urls = [
 # ==============================================================================
 
 
-def load_pdf_document(file_path):
+def load_pdf_document(file_path: str) -> List[Dict[str, Any]]:
+    """PDFドキュメントを読み込み、各ページのテキストを抽出
+
+    Args:
+        file_path (str): 読み込むPDFファイルのパス。
+
+    Returns:
+        List[Dict[str, Any]]: 各ページのテキストとメタデータを含む辞書のリスト。
+            - "content" (str): ページから抽出されたテキスト内容。
+            - "metadata" (Dict[str, str]): メタデータ情報（以下を含む）:
+                - "source" (str): PDFファイルのパス。
+    """
     documents = []
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
@@ -68,8 +78,7 @@ def document_loader(file_paths: List[str], loader_func) -> List[Dict[str, str]]:
 def document_transformer(
     docs_list: List[dict], chunk_size: int = 1100, chunk_overlap: int = 100, separator: str = "\n"
 ) -> List[Document]:
-    """
-    ドキュメントリストを LangChain の Document 型に変換し、指定されたサイズで分割する。
+    """ドキュメントリストを LangChain の Document 型に変換し、指定されたサイズで分割する。
 
     Args:
         docs_list (List[dict]): `content` と `metadata` を持つドキュメントのリスト。
@@ -96,8 +105,19 @@ def document_transformer(
     return doc_splits
 
 
-# 単語単位のn-gramを作成
 def generate_word_ngrams(text, i, j, binary=False):
+    """テキストから単語単位のn-gramを生成します。
+
+    Args:
+        text (str): n-gramを生成する元のテキスト。
+        i (int): n-gramの最小サイズ。
+        j (int): n-gramの最大サイズ。
+        binary (bool, optional): 重複を削除するかどうか。Trueの場合、重複を削除します。
+                                 デフォルトはFalse。
+
+    Returns:
+        List[Tuple[str]]: 生成されたn-gramのリスト。各n-gramはタプル形式で表されます。
+    """
     tokenizer_obj = dictionary.Dictionary(dict="core").create()
     mode = tokenizer.Tokenizer.SplitMode.A
     tokens = tokenizer_obj.tokenize(text, mode)
@@ -120,8 +140,19 @@ def preprocess_word_func(text: str) -> List[str]:
     return generate_word_ngrams(text, 1, 1, True)
 
 
-# 文字単位のn-gramを作成
 def generate_character_ngrams(text, i, j, binary=False):
+    """テキストから文字単位のn-gramを生成します。
+
+    Args:
+        text (str): n-gramを生成する元のテキスト。
+        i (int): n-gramの最小サイズ。
+        j (int): n-gramの最大サイズ。
+        binary (bool, optional): 重複を削除するかどうか。Trueの場合、重複を削除します。
+                                 デフォルトはFalse。
+
+    Returns:
+        List[str]: 生成されたn-gramのリスト。各n-gramは文字列形式で表されます。
+    """
     ngrams = []
 
     for n in range(i, j + 1):
@@ -150,8 +181,7 @@ def create_bm25_retrievers(
     word_weight: float = 0.7,
     char_weight: float = 0.3,
 ) -> EnsembleRetriever:
-    """
-    BM25Retriever を単語と文字レベルで作成し、それを EnsembleRetriever で統合する。
+    """BM25Retriever を単語と文字レベルで作成し、それを EnsembleRetriever で統合する。
 
     Args:
         doc_splits (List): 分割されたドキュメントのリスト。
@@ -196,6 +226,7 @@ def rag_implementation(question: str) -> str:
         - model 変数 と pdf_file_urls 変数は編集しないでください
         - 回答は日本語で生成してください
     """
+
     # モデルの初期化
     llm = ChatOpenAI(model_name=model, temperature=0)
 
@@ -205,7 +236,7 @@ def rag_implementation(question: str) -> str:
 
     prompt = ChatPromptTemplate.from_template(
         '''\
-以下の文脈だけを踏まえて質問に回答してください。
+以下の文脈だけを踏まえて質問に日本語で回答してください。
 
 文脈: """
 {context}
