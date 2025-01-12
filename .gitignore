@@ -4,6 +4,7 @@
 *.png
 *.pkl
 *.log
+*.pdf
 # *.json
 
 # Byte-compiled / optimized / DLL files
