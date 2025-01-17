@@ -16,3 +16,12 @@ numpy==1.26.4
 polars==1.18.0
 pandas==2.2.3
 open-clip-torch==2.29.0
+janome==0.5.0
+unstructured==0.16.12
+pymupdf4llm==0.0.17
+requests==2.32.3
+sentence-transformers==3.3.1
+markitdown==0.0.1a3
+py-zerox==0.0.7
+easyocr==1.7.2
+faiss-cpu==1.9.0.post1
