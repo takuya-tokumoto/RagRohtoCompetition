@@ -1,96 +1,51 @@
-import json
-import sys
-import time
+import csv
 
-import pdfplumber
-import requests
 from dotenv import load_dotenv
-from langchain import callbacks
-from langchain.schema import Document
-from langchain_chroma import Chroma
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_text_splitters import CharacterTextSplitter
 
-from main_0011 import pdf_file_urls, rag_implementation
+from main_0008 import rag_implementation as rag_implementation_pre  # 後で消す
+from main_0012 import rag_implementation
 
 
-def evaluate_rag(csv_path: str, output_path: str) -> None:
+def load_csv(file_path: str) -> list:
     """
-    RAGモデルの評価を行う関数
+    CSVファイルを読み込む関数。
 
     Args:
-        csv_path (str): 質問と期待する回答が含まれるCSVファイルのパス
-        output_path (str): 評価結果を保存するCSVファイルのパス
+        file_path (str): CSVファイルのパス。
+
+    Returns:
+        list: 辞書形式の質問と正解のリスト。
     """
-    # 評価データを読み込む
-    data = pd.read_csv(csv_path)
-
-    # PDFファイルのURLリストを表示（必要に応じて使用）
-    print("Evaluating with the following PDF files:")
-    for url in pdf_file_urls:
-        print(url)
-
-    # 評価メトリックを設定
-    rouge = load_metric("rouge")
-
-    # 評価結果を格納するリスト
-    results = []
-
-    # データセットをループ処理
-    for _, row in data.iterrows():
-        question = row["question"]
-        expected_answer = row["expected_answer"]
-
-        # rag_implementation関数を呼び出して回答を生成
-        generated_answer = rag_implementation(question)
-
-        # メトリックを計算
-        score = rouge.compute(predictions=[generated_answer], references=[expected_answer])
-        results.append(
-            {
-                "question": question,
-                "expected_answer": expected_answer,
-                "generated_answer": generated_answer,
-                "rouge-l": score["rougeL"].mid.fmeasure,
-            }
-        )
-
-    # 結果をデータフレームに変換
-    results_df = pd.DataFrame(results)
-
-    # 評価結果を保存
-    results_df.to_csv(output_path, index=False)
-    print(f"Evaluation results saved to {output_path}")
+    qa_pairs = []
+    with open(file_path, mode="r", encoding="utf-8-sig") as file:  # エンコーディングをutf-8-sigに変更
+        reader = csv.DictReader(file)
+        for row in reader:
+            qa_pairs.append({"query": row["query"], "groundtruth": row["groundtruth"]})
+    return qa_pairs
 
 
 if __name__ == "__main__":
     load_dotenv()
 
-    querys = [
-        "存在意義（パーパス）は、なんですか？",
-        "事務連絡者の電話番号は？",
-        "Vロートプレミアムは、第何類の医薬品ですか？",
-        "肌ラボ 極潤ヒアルロン液の詰め替え用には、何mLが入っていますか？",
-        "LN211E8は、どのようなhiPSCの分化において、どのように作用しますか？",
-    ]
-    groundtrurhs = [
-        "世界の人々に商品やサービスを通じて「健康」をお届けすることによって、当社を取り巻くすべての人や社会を「Well-being」へと導き、明日の世界を元気にすることです。",
-        "（06）6758-1235です。",
-        "第2類医薬品です。",
-        "170mLが入っています。",
-        "Wnt 活性化を通じて神経堤細胞への分化を促進します。",
-    ]
+    # 外部CSVファイルの読み込み
+    csv_path = "/root/git_work/90_adhoc/RagRohtoCompetition/validation_dataset_v001.csv"  # CSVファイルのパス
+    qa_pairs = load_csv(csv_path)
 
-    for i, (query, groundtrurh) in enumerate(zip(querys, groundtrurhs)):
+    # RAG処理
+    for i, qa_pair in enumerate(qa_pairs):
+        query = qa_pair["query"]
+        groundtruth = qa_pair["groundtruth"]
+
         print(f"Question {i+1}.")
         ans = rag_implementation(query)
+        ans_pre = rag_implementation_pre(query)
+
         print(query)
 
         print(" ■正解：")
-        print(groundtrurh)
-        print(" ■予測文章：")
+        print(groundtruth)
+        print(" ■(改修前)予測文章：")
+        print(ans_pre)
+        print(" ■(改修後)予測文章：")
         print(ans)
         print("=" * 10)
