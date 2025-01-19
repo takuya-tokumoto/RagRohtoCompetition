@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+from functools import partial
 from operator import itemgetter
 from typing import Any, Callable, Dict, List
 
@@ -11,15 +12,17 @@ import fitz  # PyMuPDF
 import requests
 from dotenv import load_dotenv
 from langchain import callbacks
+from langchain.docstore.document import Document
 from langchain.retrievers import EnsembleRetriever
-from langchain.schema import Document
+from langchain.schema import BaseOutputParser, BaseRetriever
+from langchain.schema import Document as LCDocument
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.retrievers import BM25Retriever
+from langchain_community.vectorstores import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-from langchain_openai import ChatOpenAI
-from langchain_text_splitters import CharacterTextSplitter
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 from sudachipy import dictionary, tokenizer
 
@@ -41,6 +44,8 @@ pdf_file_urls = [
 # この関数を編集して、あなたの RAG パイプラインを実装してください。
 # !!! 注意 !!!: デバッグ過程は標準出力に出力しないでください。
 # ==============================================================================
+
+
 def rag_implementation(question: str) -> str:
     """
     ロート製薬の製品・企業情報に関する質問に対して回答を生成する関数
@@ -58,6 +63,9 @@ def rag_implementation(question: str) -> str:
         - 回答は日本語で生成してください
     """
 
+    # ---------------------------
+    # 1) PDFダウンロード＆読み込み
+    # ---------------------------
     def download_and_load_pdfs(urls: list) -> list:
         """
         指定されたURLからPDFファイルをダウンロードし、テキストを抽出する関数。
@@ -259,6 +267,9 @@ def rag_implementation(question: str) -> str:
         except Exception as e:
             raise Exception(f"Error reading {url}: {e}")
 
+    # ---------------------------
+    # 2) 文書のチャンク分割
+    # ---------------------------
     def document_transformer(
         docs_list: List[Document], chunk_size: int = 1100, chunk_overlap: int = 100, separator: str = "\n"
     ) -> List[Document]:
@@ -286,7 +297,9 @@ def rag_implementation(question: str) -> str:
 
         return doc_splits
 
-    # structured outputのデータ構造の定義
+    # ---------------------------
+    # 3) クエリ生成モデル (複数検索クエリの拡張)
+    # ---------------------------
     class Query(BaseModel):
         """質問のリスト"""
 
@@ -357,57 +370,10 @@ def rag_implementation(question: str) -> str:
 
         return queries
 
-    def reciprocal_rank_fusion(results: list[list], k=60) -> List[str]:
-        """
-        Reciprocal Rank Fusion (RRF) アルゴリズムを使用して、複数のランキング結果を統合する関数。
-
-        この関数は、複数のランキング結果（`results`）を受け取り、各ドキュメントに対するスコアを
-        計算して統合します。統合されたスコアを基に、ドキュメントを再ランク付けし、上位数件のドキュメントを返します。
-
-        RRFでは、各ランキングリスト内の順位に基づいてスコアを計算します。順位が低い（高順位）ドキュメントに
-        より高いスコアが付与されます。計算式は以下の通りです：
-
-        \[
-        \text{score} = \sum_{i=1}^{n} \frac{1}{\text{rank}_i + k}
-        \]
-        - `rank_i`: 各リストにおけるドキュメントの順位（0から始まる）。
-        - `k`: 安定性を調整するための定数（デフォルトは60）。
-
-        Args:
-            results (list[list]): 複数のランキングリスト。各リストにはドキュメントが順位付けされています。
-            k (int, optional): スコア計算時の調整パラメータ。デフォルトは60。
-
-        Returns:
-            list: RRFアルゴリズムを通じて再ランク付けされた、上位4件のドキュメントのリスト。
-
-        Example:
-            >>> results = [
-            ...     [{"id": 1}, {"id": 2}, {"id": 3}],
-            ...     [{"id": 2}, {"id": 3}, {"id": 4}],
-            ...     [{"id": 1}, {"id": 4}, {"id": 3}]
-            ... ]
-            >>> reciprocal_rank_fusion(results)
-            [{"id": 2}, {"id": 1}, {"id": 3}, {"id": 4}]
-
-        Note:
-            - `Document.to_json(doc)` を使用して、ドキュメントを JSON 形式に変換して統合しています。
-            - 上位4件のドキュメントを返しますが、必要に応じて数を調整できます。
-        """
-
-        fused_scores = {}
-        for docs in results:
-            for rank, doc in enumerate(docs):
-                doc_str = json.dumps(Document.to_json(doc), ensure_ascii=False)
-                if doc_str not in fused_scores:
-                    fused_scores[doc_str] = 0
-                fused_scores[doc_str] += 1 / (rank + k)
-
-        reranked_results = [
-            (doc, score) for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
-        ]
-
-        return [x[0] for x in reranked_results[:8]]
-
+    # ---------------------------
+    # 4-1) BM25関連
+    # ---------------------------
+    # ※ 以下、必要に応じて形態素解析器の設定が必要です
     def generate_word_ngrams(text, i, j, binary=False):
         """テキストから単語単位のn-gramを生成します。
 
@@ -473,40 +439,104 @@ def rag_implementation(question: str) -> str:
         return generate_character_ngrams(text, i, j, True)
 
     def create_bm25_retrievers(
-        doc_splits: List,
+        doc_splits: List[Document],
         word_preprocess_func: Callable,
         char_preprocess_func: Callable,
         k_value: int = 4,
         word_weight: float = 0.7,
         char_weight: float = 0.3,
     ) -> EnsembleRetriever:
-        """BM25Retriever を単語と文字レベルで作成し、それを EnsembleRetriever で統合する。
-
-        Args:
-            doc_splits (List): 分割されたドキュメントのリスト。
-            word_preprocess_func (Callable): 単語レベルの前処理関数。
-            char_preprocess_func (Callable): 文字レベルの前処理関数。
-            k_value (int): 各 BM25Retriever に設定する `k` の値。
-            word_weight (float): EnsembleRetriever における単語リトリーバーの重み。
-            char_weight (float): EnsembleRetriever における文字リトリーバーの重み。
-
-        Returns:
-            EnsembleRetriever: 作成された EnsembleRetriever オブジェクト。
         """
-        # Create word-level BM25 retriever
+        BM25Retriever(単語版, 文字版) を EnsembleRetriever でまとめる
+        """
+        # Word-level BM25
         word_retriever = BM25Retriever.from_documents(doc_splits, preprocess_func=word_preprocess_func)
         word_retriever.k = k_value
 
-        # Create char-level BM25 retriever
+        # Char-level BM25
         char_retriever = BM25Retriever.from_documents(doc_splits, preprocess_func=char_preprocess_func)
         char_retriever.k = k_value
 
-        # Create EnsembleRetriever
+        # Ensembleにまとめる
         ensemble_retriever = EnsembleRetriever(
             retrievers=[word_retriever, char_retriever], weights=[word_weight, char_weight]
         )
-
         return ensemble_retriever
+
+    # ---------------------------
+    # 4-2) Chroma検索関連
+    # ---------------------------
+
+    def create_vectorstore(doc_splits: list) -> Chroma:
+        """
+        テキストデータからベクトルストアを生成する関数
+
+        Args:
+            docs (list): Documentオブジェクトのリスト
+
+        Returns:
+            vectorstore (Chroma): ベクトルストア
+        """
+        try:
+            embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
+            vectorstore = Chroma.from_documents(doc_splits, embedding_function)
+            return vectorstore
+        except Exception as e:
+            raise Exception(f"Error creating vectorstore: {e}")
+
+    # ---------------------------
+    # 5) RRFによるマージ
+    # ---------------------------
+    def reciprocal_rank_fusion(results: list[list], k=60) -> List[str]:
+        """
+        Reciprocal Rank Fusion (RRF) アルゴリズムを使用して、複数のランキング結果を統合する関数。
+
+        この関数は、複数のランキング結果（`results`）を受け取り、各ドキュメントに対するスコアを
+        計算して統合します。統合されたスコアを基に、ドキュメントを再ランク付けし、上位数件のドキュメントを返します。
+
+        RRFでは、各ランキングリスト内の順位に基づいてスコアを計算します。順位が低い（高順位）ドキュメントに
+        より高いスコアが付与されます。計算式は以下の通りです：
+
+        \[
+        \text{score} = \sum_{i=1}^{n} \frac{1}{\text{rank}_i + k}
+        \]
+        - `rank_i`: 各リストにおけるドキュメントの順位（0から始まる）。
+        - `k`: 安定性を調整するための定数（デフォルトは60）。
+
+        Args:
+            results (list[list]): 複数のランキングリスト。各リストにはドキュメントが順位付けされています。
+            k (int, optional): スコア計算時の調整パラメータ。デフォルトは60。
+
+        Returns:
+            list: RRFアルゴリズムを通じて再ランク付けされた、上位4件のドキュメントのリスト。
+
+        Example:
+            >>> results = [
+            ...     [{"id": 1}, {"id": 2}, {"id": 3}],
+            ...     [{"id": 2}, {"id": 3}, {"id": 4}],
+            ...     [{"id": 1}, {"id": 4}, {"id": 3}]
+            ... ]
+            >>> reciprocal_rank_fusion(results)
+            [{"id": 2}, {"id": 1}, {"id": 3}, {"id": 4}]
+
+        Note:
+            - `Document.to_json(doc)` を使用して、ドキュメントを JSON 形式に変換して統合しています。
+            - 上位数件のドキュメントを返しますが、必要に応じて数を調整できます。
+        """
+
+        fused_scores = {}
+        for docs in results:
+            for rank, doc in enumerate(docs):
+                doc_str = json.dumps(Document.to_json(doc), ensure_ascii=False)
+                if doc_str not in fused_scores:
+                    fused_scores[doc_str] = 0
+                fused_scores[doc_str] += 1 / (rank + k)
+
+        reranked_results = [
+            (doc, score) for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+        ]
+
+        return [x[0] for x in reranked_results[:8]]
 
     def format_docs(docs: list) -> str:
         """ドキュメントのリストを整形し、フォーマット済みのテキストを返す関数。
@@ -533,15 +563,122 @@ def rag_implementation(question: str) -> str:
             format_docs.append(docs_json["kwargs"]["page_content"])
         return "\n\n".join(format_docs)
 
-    docs = download_and_load_pdfs(pdf_file_urls)
-    doc_splits = document_transformer(docs, chunk_size=1200, chunk_overlap=100, separator="\n")
-    ensemble_retriever = create_bm25_retrievers(doc_splits, preprocess_word_func, preprocess_char_func)
+    # ---------------------------------------------------------------
+    # ここからハイブリッド検索（BM25 + ベクトル検索）を準備
+    # ---------------------------------------------------------------
 
+    # 1) PDFを読み込む
+    docs = download_and_load_pdfs(pdf_file_urls)
+    # 2) BM25用にドキュメント分割
+    doc_splits = document_transformer(docs, chunk_size=1200, chunk_overlap=100)
+
+    # 3) ベクトルストアを作成
+    db = create_vectorstore(doc_splits)
+    vector_retriever = db.as_retriever(
+        search_kwargs={"k": 8}
+    )  # search_kwargs:類似検索時に返すDocumentsオブジェクトの数
+
+    # 4) BM25 Retriever (Word + Char Ensemble)
+    bm25_ensemble_retriever = create_bm25_retrievers(
+        doc_splits,
+        preprocess_word_func,
+        preprocess_char_func,
+        k_value=8,
+        word_weight=0.7,
+        char_weight=0.3,  # k_value: 返す件数
+    )
+
+    # ---------------------------------------------------------------
+    # 5) RAGパイプライン:
+    #    (1) 質問をクエリ群に拡張 → (2) BM25で検索 → (3) ベクトル検索 → (4) RRFで融合
+    # ---------------------------------------------------------------
+
+    # (A) 質問を複数クエリに変換する Runnable
+    query_gen = RunnableLambda(query_generator)
+
+    # (B) BM25 & ベクトル検索の「map()」: 各クエリに対して invoke を実行
+    def bm25_map(queries: list[str]) -> list[List[LCDocument]]:
+        """
+        複数のクエリをBM25 EnsembleRetrieverで検索し、それぞれに対応する検索結果を返します。
+
+        Args:
+            queries (list[str]):
+                検索したいクエリ文字列のリスト。
+
+        Returns:
+            list[list[LCDocument]]:
+                各クエリに対する検索結果が格納された二次元リスト。
+                具体的には、`all_results` は以下のような構造になります。
+
+                [
+                    [LCDocument, LCDocument, ...],  # 1つ目のクエリに対する検索結果
+                    [LCDocument, LCDocument, ...],  # 2つ目のクエリに対する検索結果
+                    ...
+                ]
+
+                - 外側のリスト: クエリごとの検索結果をまとめたもの
+                - 内側のリスト: 各クエリに対して BM25 EnsembleRetriever が返す LCDocument のリスト
+        """
+        all_results = []
+        for q in queries:
+            docs_ = bm25_ensemble_retriever.invoke(q)
+            all_results.append(docs_)
+        return all_results
+
+    def vector_map(queries: list[str]) -> list[List[LCDocument]]:
+        """
+        複数のクエリをベクトル検索リトリーバで検索し、それぞれに対応する検索結果を返します。
+
+        Args:
+            queries (list[str]):
+                検索したいクエリ文字列のリスト。
+
+        Returns:
+            list[list[LCDocument]]:
+                各クエリに対する検索結果が格納された二次元リスト。
+                具体的には、`all_results` は以下のような構造になります。
+
+                [
+                    [LCDocument, LCDocument, ...],  # 1つ目のクエリに対する検索結果
+                    [LCDocument, LCDocument, ...],  # 2つ目のクエリに対する検索結果
+                    ...
+                ]
+
+                - 外側のリスト: クエリごとの検索結果をまとめたもの
+                - 内側のリスト: 各クエリに対して ベクトル検索リトリーバ が返す LCDocument のリスト
+        """
+        all_results = []
+        for q in queries:
+            docs_ = vector_retriever.invoke(q)
+            all_results.append(docs_)
+        return all_results
+
+    bm25_search = RunnableLambda(bm25_map)
+    vector_search = RunnableLambda(vector_map)
+
+    # (C) RRFでマージ
+    def rrf_merge(results_dict: dict) -> list[str]:
+        """
+        results_dict: {"bm25": [...], "vector": [...]}
+            - それぞれがクエリごとの検索結果 list[List[Document]] を持つ
+        """
+        bm25_results = results_dict["bm25"]  # list[List[Document]]
+        vec_results = results_dict["vector"]
+        # クエリ数は同じはずなので zip で回しながらRRF
+        final_docs = []
+        for bm25_list, vec_list in zip(bm25_results, vec_results):
+            fused = reciprocal_rank_fusion([bm25_list, vec_list], k=60)
+            final_docs.extend(fused)
+        return final_docs
+
+    rrf_fusion = RunnableLambda(rrf_merge)
+
+    # (D) format_docs で文字列化
+    # (E) LLM（ChatOpenAI）で最終回答
+
+    # -- LangChain の Runnableを組み合わせる --
     rag_fusion_retriever = (
-        {"question": itemgetter("question")}
-        | RunnableLambda(query_generator)
-        | ensemble_retriever.map()
-        | reciprocal_rank_fusion
+        {"question": itemgetter("question")} | query_gen | {"bm25": bm25_search, "vector": vector_search} | rrf_fusion
     )
 
     template = """
