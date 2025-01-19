@@ -28,7 +28,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     # 外部CSVファイルの読み込み
-    csv_path = "/root/git_work/90_adhoc/RagRohtoCompetition/validation_dataset_v001.csv"  # CSVファイルのパス
+    csv_path = "/root/git_work/90_adhoc/RagRohtoCompetition/validation_dataset_v002.csv"  # CSVファイルのパス
     qa_pairs = load_csv(csv_path)
 
     # RAG処理
