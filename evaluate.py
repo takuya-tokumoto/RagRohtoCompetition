@@ -3,7 +3,7 @@ import csv
 from dotenv import load_dotenv
 
 from main_0014 import rag_implementation as rag_implementation_pre  # 後で消す
-from main_0018 import rag_implementation
+from main_0019 import rag_implementation
 
 
 def load_csv(file_path: str) -> list:

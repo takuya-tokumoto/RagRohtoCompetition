@@ -536,7 +536,7 @@ def rag_implementation(question: str) -> str:
             (doc, score) for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
         ]
 
-        return [x[0] for x in reranked_results[:8]]
+        return [x[0] for x in reranked_results[:4]]
 
     def format_docs(docs: list) -> str:
         """ドキュメントのリストを整形し、フォーマット済みのテキストを返す関数。
